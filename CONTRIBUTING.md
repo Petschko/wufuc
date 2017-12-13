@@ -1,12 +1,12 @@
 # Contributing guidelines
 
-**English** | [русский](translations/CONTRIBUTING.ru-RU.md) | [Français](translations/CONTRIBUTING.fr-FR.md) | [Deutsch](translations/CONTRIBUTING.de-DE.md) | [Magyar](translations/CONTRIBUTING.hu-HU.md) | [Portuguese (Brazil)](translations/CONTRIBUTING.pt-BR.md)
+**English** | [Community translations](https://github.com/zeffy/wufuc/wiki)
 
 ## Reporting an issue [![](https://isitmaintained.com/badge/resolution/zeffy/wufuc.svg)](https://isitmaintained.com/project/zeffy/wufuc)
 
 #### Before you create an issue, please make sure of the following:
 
-- Are you using at least the [latest stable version](../../releases/latest)?
+- Are you using at least the [latest stable version](https://github.com/zeffy/wufuc/releases/latest)?
 - Have you tried restarting your computer?
 
 #### After you've confirmed those things, please create an issue and include the following information:

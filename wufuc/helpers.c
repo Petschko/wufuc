@@ -1,120 +1,163 @@
+#include "stdafx.h"
 #include "helpers.h"
+#include <sddl.h>
 
-#include "logging.h"
+bool create_exclusive_mutex(const wchar_t *name, HANDLE *pmutex)
+{
+        HANDLE mutex;
 
-#include <stdint.h>
-
-#include <Windows.h>
-#include <tchar.h>
-#include <Psapi.h>
-#include <TlHelp32.h>
-
-static BOOL CompareWindowsVersion(BYTE Operator, DWORD dwMajorVersion, DWORD dwMinorVersion, WORD wServicePackMajor, WORD wServicePackMinor, DWORD dwTypeMask) {
-    OSVERSIONINFOEX osvi = { 0 };
-    osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEX);
-    osvi.dwMajorVersion = dwMajorVersion;
-    osvi.dwMinorVersion = dwMinorVersion;
-    osvi.wServicePackMajor = wServicePackMajor;
-    osvi.wServicePackMinor = wServicePackMinor;
-
-    DWORDLONG dwlConditionMask = 0;
-    VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, Operator);
-    VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION, Operator);
-    VER_SET_CONDITION(dwlConditionMask, VER_SERVICEPACKMAJOR, Operator);
-    VER_SET_CONDITION(dwlConditionMask, VER_SERVICEPACKMINOR, Operator);
-
-    return VerifyVersionInfo(&osvi, dwTypeMask, dwlConditionMask);
+        mutex = CreateMutexW(NULL, TRUE, name);
+        if ( mutex ) {
+                if ( GetLastError() == ERROR_ALREADY_EXISTS ) {
+                        CloseHandle(mutex);
+                        return false;
+                }
+                *pmutex = mutex;
+                return true;
+        }
+        return false;
 }
 
-BOOL IsWindows7(void) {
-    static BOOL m_checkedIsWindows7 = FALSE;
-    static BOOL m_isWindows7 = FALSE;
+bool create_event_with_security_descriptor(const wchar_t *descriptor, bool manualreset, bool initialstate, const wchar_t *name, HANDLE *pevent)
+{
+        SECURITY_ATTRIBUTES sa = { sizeof sa };
+        HANDLE event;
 
-    if ( !m_checkedIsWindows7 ) {
-        m_isWindows7 = CompareWindowsVersion(VER_EQUAL, 6, 1, 0, 0, VER_MAJORVERSION | VER_MINORVERSION);
-        m_checkedIsWindows7 = TRUE;
-    }
-    return m_isWindows7;
+        if ( ConvertStringSecurityDescriptorToSecurityDescriptorW(descriptor, SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL) ) {
+                event = CreateEventW(&sa, manualreset, initialstate, name);
+                if ( event ) {
+                        *pevent = event;
+                        return true;
+                }
+        }
+        return false;
 }
 
-BOOL IsWindows8Point1(void) {
-    static BOOL m_checkedIsWindows8Point1 = FALSE;
-    static BOOL m_isWindows8Point1 = FALSE;
+bool inject_self_into_process(DWORD dwProcessId, HMODULE *phModule)
+{
+        wchar_t szFilename[MAX_PATH];
+        DWORD nLength;
 
-    if ( !m_checkedIsWindows8Point1 ) {
-        m_isWindows8Point1 = CompareWindowsVersion(VER_EQUAL, 6, 3, 0, 0, VER_MAJORVERSION | VER_MINORVERSION);
-        m_checkedIsWindows8Point1 = TRUE;
-    }
-    return m_isWindows8Point1;
+        nLength = GetModuleFileNameW(PIMAGEBASE, szFilename, _countof(szFilename));
+
+        if ( nLength )
+                return inject_dll_into_process(dwProcessId, szFilename, nLength, phModule);
+
+        return false;
 }
 
-BOOL IsOperatingSystemSupported(void) {
-#if !defined(_AMD64_) && !defined(_X86_)
-    return FALSE;
-#else
-    return IsWindows7() || IsWindows8Point1();
-#endif
+bool inject_dll_into_process(DWORD dwProcessId, const wchar_t *pszFilename, size_t nLength, HMODULE *phModule)
+{
+        bool result = false;
+        HANDLE hProcess;
+        NTSTATUS Status;
+        LPVOID pBaseAddress;
+        HANDLE hThread;
+        HANDLE hModule = NULL;
+
+        hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwProcessId);
+        if ( !hProcess ) return result;
+
+        Status = NtSuspendProcess(hProcess);
+        if ( !NT_SUCCESS(Status) ) goto L1;
+
+        pBaseAddress = VirtualAllocEx(hProcess, NULL, nLength + (sizeof *pszFilename), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if ( !pBaseAddress ) goto L2;
+
+        if ( WriteProcessMemory(hProcess, pBaseAddress, pszFilename, nLength, NULL)
+                && (hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryW, pBaseAddress, 0, NULL)) ) {
+
+                WaitForSingleObject(hThread, INFINITE);
+                if ( sizeof(DWORD) < sizeof hModule ) {
+
+                } else {
+                        GetExitCodeThread(hThread, (LPDWORD)&hModule);
+                }
+                if ( hModule ) {
+                        result = true;
+                        *phModule = hModule;
+                }
+                CloseHandle(hThread);
+        }
+        VirtualFreeEx(hProcess, pBaseAddress, 0, MEM_RELEASE);
+L2:     NtResumeProcess(hProcess);
+L1:     CloseHandle(hProcess);
+        return result;
 }
 
-BOOL IsWow64(void) {
-    static BOOL m_checkedIsWow64 = FALSE;
-    static BOOL m_isWow64 = FALSE;
-    static ISWOW64PROCESS fpIsWow64Process = NULL;
+const wchar_t *path_find_fname(const wchar_t *path)
+{
+        const wchar_t *pwc = NULL;
+        if ( path )
+                pwc = (const wchar_t *)wcsrchr(path, L'\\');
 
-    if ( !m_checkedIsWow64 ) {
-        if ( !fpIsWow64Process )
-            fpIsWow64Process = (ISWOW64PROCESS)GetProcAddress(GetModuleHandle(_T("kernel32.dll")), "IsWow64Process");
-
-        if ( fpIsWow64Process && fpIsWow64Process(GetCurrentProcess(), &m_isWow64) )
-            m_checkedIsWow64 = TRUE;
-    }
-    return m_isWow64;
+        return (pwc && *(++pwc)) ? pwc : path;
 }
 
-void suspend_other_threads(LPHANDLE lphThreads, size_t *lpcb) {
-    DWORD dwProcessId = GetCurrentProcessId();
-    DWORD dwThreadId = GetCurrentThreadId();
+bool path_change_fname(const wchar_t *srcpath, const wchar_t *fname, wchar_t *dstpath, size_t size)
+{
+        bool result;
+        wchar_t drive[_MAX_DRIVE];
+        wchar_t dir[_MAX_DIR];
 
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    THREADENTRY32 te = { 0 };
-    te.dwSize = sizeof(te);
-    Thread32First(hSnap, &te);
-
-    size_t count = 0;
-    do {
-        if ( te.th32OwnerProcessID != dwProcessId || te.th32ThreadID == dwThreadId )
-            continue;
-
-        lphThreads[count] = OpenThread(THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-        SuspendThread(lphThreads[count]);
-        count++;
-    } while ( count < *lpcb && Thread32Next(hSnap, &te) );
-    CloseHandle(hSnap);
-    *lpcb = count;
-    trace(_T("Suspended %d other threads"), count);
+        result = !_wsplitpath_s(srcpath, drive, _countof(drive), dir, _countof(dir), NULL, 0, NULL, 0);
+        if ( result )
+                result = !_wmakepath_s(dstpath, size, drive, dir, fname, NULL);
+        return result;
 }
 
-void resume_and_close_threads(LPHANDLE lphThreads, size_t cb) {
-    for ( size_t i = 0; i < cb; i++ ) {
-        ResumeThread(lphThreads[i]);
-        CloseHandle(lphThreads[i]);
-    }
-    trace(_T("Resumed %d threads"), cb);
+bool path_file_exists(const wchar_t *path)
+{
+        return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
 }
 
-void get_cpuid_brand(char *brand) {
-    int info[4];
-    __cpuidex(info, 0x80000000, 0);
-    if ( info[0] < 0x80000004 ) {
-        brand[0] = '\0';
-        return;
-    }
-    uint32_t *char_as_int = (uint32_t *)brand;
-    for ( int op = 0x80000002; op <= 0x80000004; op++ ) {
-        __cpuidex(info, op, 0);
-        *(char_as_int++) = info[0];
-        *(char_as_int++) = info[1];
-        *(char_as_int++) = info[2];
-        *(char_as_int++) = info[3];
-    }
+bool path_expand_file_exists(const wchar_t *path)
+{
+        bool result;
+        wchar_t *dst;
+        DWORD buffersize;
+        DWORD size;
+
+        dst = NULL;
+        size = 0;
+        do {
+                if ( size ) {
+                        if ( dst )
+                                free(dst);
+                        dst = calloc(size, sizeof *dst);
+                }
+                buffersize = size;
+                size = ExpandEnvironmentStringsW(path, dst, buffersize);
+        } while ( buffersize < size );
+
+        result = path_file_exists(dst);
+        free(dst);
+        return result;
+}
+
+int ffi_ver_compare(VS_FIXEDFILEINFO *pffi, WORD wMajor, WORD wMinor, WORD wBuild, WORD wRev)
+{
+        if ( HIWORD(pffi->dwProductVersionMS) < wMajor ) return -1;
+        if ( HIWORD(pffi->dwProductVersionMS) > wMajor ) return 1;
+        if ( LOWORD(pffi->dwProductVersionMS) < wMinor ) return -1;
+        if ( LOWORD(pffi->dwProductVersionMS) > wMinor ) return 1;
+        if ( HIWORD(pffi->dwProductVersionLS) < wBuild ) return -1;
+        if ( HIWORD(pffi->dwProductVersionLS) > wBuild ) return 1;
+        if ( LOWORD(pffi->dwProductVersionLS) < wRev ) return -1;
+        if ( LOWORD(pffi->dwProductVersionLS) > wRev ) return 1;
+        return 0;
+}
+
+size_t find_argv_option(const wchar_t **argv, size_t argc, const wchar_t *option)
+{
+        size_t index = -1;
+
+        for ( size_t i = 1; i < argc; i++ ) {
+                if ( !_wcsicmp(argv[i], option) )
+                        index = i;
+        }
+        if ( index == -1 )
+                return index;
+
+        return ++index < argc ? index : -1;
 }

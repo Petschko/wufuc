@@ -1,83 +1,81 @@
-#include "service.h"
+#include "stdafx.h"
+#include "callbacks.h"
 #include "helpers.h"
-#include "logging.h"
 
-#include <Windows.h>
-#include <tchar.h>
-#include <TlHelp32.h>
-#include <VersionHelpers.h>
+void CALLBACK RUNDLL32_StartW(HWND hwnd, HINSTANCE hinst, LPWSTR lpszCmdLine, int nCmdShow)
+{
+        HANDLE hMutex;
+        HANDLE hEvent;
+        bool Unloading;
+        bool Lagging;
+        SC_HANDLE hSCM;
+        SC_HANDLE hService;
+        SERVICE_NOTIFYW NotifyBuffer;
 
-void CALLBACK Rundll32Entry(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int nCmdShow) {
-    HANDLE hEvent = OpenEvent(SYNCHRONIZE, FALSE, _T("Global\\wufuc_UnloadEvent"));
-    if ( hEvent ) {
-        CloseHandle(hEvent);
-        return;
-    }
+        if ( !create_exclusive_mutex(L"Global\\{25020063-B5A7-4227-9FDF-25CB75E8C645}", &hMutex) )
+                return;
 
-    wchar_t *osname;
-    if ( IsWindows7() ) {
-        if ( IsWindowsServer() )
-            osname = _T("Windows Server 2008 R2");
-        else
-            osname = _T("Windows 7");
-    } else if ( IsWindows8Point1() ) {
-        if ( IsWindowsServer() )
-            osname = _T("Windows Server 2012 R2");
-        else
-            osname = _T("Windows 8.1");
-    }
-    trace(_T("Operating System: %s %d-bit"), osname, sizeof(uintptr_t) * 8);
+        if ( !create_event_with_security_descriptor(L"D:(A;;0x001F0003;;;BA)", true, false, L"Global\\wufuc_UnloadEvent", &hEvent) )
+                goto L1;
 
-    char brand[0x31];
-    get_cpuid_brand(brand);
-    size_t i = 0;
-    while ( i < _countof(brand) && isspace(brand[i]) )
-        i++;
+        Unloading = false;
+        do {
+                Lagging = false;
+                hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
+                if ( !hSCM ) goto L2;
 
-    trace(_T("Processor: %hs"), brand + i);
+                hService = OpenServiceW(hSCM, L"wuauserv", SERVICE_QUERY_STATUS);
+                if ( !hService ) goto L3;
 
-    SC_HANDLE hSCManager = OpenSCManager(NULL, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CONNECT);
-    if ( !hSCManager )
-        return;
-
-    TCHAR lpGroupName[256];
-    DWORD dwProcessId;
-    BOOL result = GetServiceProcessId(hSCManager, _T("wuauserv"), &dwProcessId);
-    if ( !result && GetServiceGroupName(hSCManager, _T("wuauserv"), lpGroupName, _countof(lpGroupName)) )
-        result = GetServiceGroupProcessId(hSCManager, lpGroupName, &dwProcessId);
-
-    CloseServiceHandle(hSCManager);
-    if ( !result )
-        return;
-
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, dwProcessId);
-    if ( !hProcess )
-        return;
-
-    TCHAR lpLibFileName[MAX_PATH];
-    GetModuleFileName(HINST_THISCOMPONENT, lpLibFileName, _countof(lpLibFileName));
-    SIZE_T size = (SIZE_T)((_tcslen(lpLibFileName) + 1) * sizeof(TCHAR));
-    LPVOID lpBaseAddress = VirtualAllocEx(hProcess, NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-
-    if ( lpBaseAddress && WriteProcessMemory(hProcess, lpBaseAddress, lpLibFileName, size, NULL) ) {
-        HANDLE hThread = CreateRemoteThread(
-            hProcess, NULL, 0,
-            (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandle(_T("kernel32.dll")), STRINGIZE(LoadLibrary)),
-            lpBaseAddress, 0, NULL
-        );
-        WaitForSingleObject(hThread, INFINITE);
-        trace(_T("Injected into process: %d"), dwProcessId);
-        CloseHandle(hThread);
-    }
-    VirtualFreeEx(hProcess, lpBaseAddress, 0, MEM_RELEASE);
-    CloseHandle(hProcess);
+                ZeroMemory(&NotifyBuffer, sizeof NotifyBuffer);
+                NotifyBuffer.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+                NotifyBuffer.pfnNotifyCallback = ServiceNotifyCallback;
+                NotifyBuffer.pContext = (PVOID)hEvent;
+                while ( !Unloading && !Lagging ) {
+                        switch ( NotifyServiceStatusChangeW(hService,
+                                SERVICE_NOTIFY_START_PENDING | SERVICE_NOTIFY_RUNNING,
+                                &NotifyBuffer) ) {
+                        case ERROR_SUCCESS:
+                                Unloading = WaitForSingleObjectEx(hEvent, INFINITE, TRUE) == WAIT_OBJECT_0;
+                                break;
+                        case ERROR_SERVICE_NOTIFY_CLIENT_LAGGING:
+                                trace(L"Client lagging!");
+                                Lagging = true;
+                                break;
+                        default:
+                                Unloading = true;
+                                break;
+                        }
+                }
+                CloseServiceHandle(hService);
+L3:             CloseServiceHandle(hSCM);
+        } while ( Lagging );
+L2:     CloseHandle(hEvent);
+L1:     ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
 }
 
-void CALLBACK Rundll32Unload(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int nCmdShow) {
-    HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, FALSE, _T("Global\\wufuc_UnloadEvent"));
-    if ( hEvent ) {
-        trace(_T("Setting unload event..."));
-        SetEvent(hEvent);
-        CloseHandle(hEvent);
-    }
+void CALLBACK RUNDLL32_UnloadW(HWND hwnd, HINSTANCE hinst, LPWSTR lpszCmdLine, int nCmdShow)
+{
+        HANDLE event;
+
+        event = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Global\\wufuc_UnloadEvent");
+        if ( event ) {
+                SetEvent(event);
+                CloseHandle(event);
+        }
+}
+
+void CALLBACK RUNDLL32_DeleteFileW(HWND hwnd, HINSTANCE hinst, LPWSTR lpszCmdLine, int nCmdShow)
+{
+        int argc;
+        LPWSTR *argv;
+
+        argv = CommandLineToArgvW(lpszCmdLine, &argc);
+        if ( argv ) {
+                if ( !DeleteFileW(argv[0]) && GetLastError() == ERROR_ACCESS_DENIED )
+                        MoveFileExW(argv[0], NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+
+                LocalFree((HLOCAL)argv);
+        }
 }

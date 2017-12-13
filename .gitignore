@@ -254,6 +254,8 @@ paket-files/
 # Advanced Installer
 **/*-cache/
 **/*-SetupFiles/
+**/*.back.aip
 
 # Other
-setup-batch/*.dll
+wufuc_setup_bat/*.dll
+wufuc_setup_bat/*.zip
