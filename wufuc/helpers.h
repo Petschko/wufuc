@@ -1,13 +1,49 @@
 #pragma once
 
-bool create_exclusive_mutex(const wchar_t *name, HANDLE *pmutex);
-bool create_event_with_security_descriptor(const wchar_t *descriptor, bool manualreset, bool initialstate, const wchar_t *name, HANDLE *pevent);
+typedef struct
+{
+        WORD wLanguage;
+        WORD wCodePage;
+} LANGANDCODEPAGE, *PLANGANDCODEPAGE;
 
-bool inject_self_into_process(DWORD dwProcessId, HMODULE *phModule);
-bool inject_dll_into_process(DWORD dwProcessId, const wchar_t *pszFilename, size_t nLength, HMODULE *phModule);
-
-const wchar_t *path_find_fname(const wchar_t *path);
-bool path_change_fname(const wchar_t *srcpath, const wchar_t *fname, wchar_t *dstpath, size_t size);
-bool path_file_exists(const wchar_t *path);
-bool path_expand_file_exists(const wchar_t *path);
-int ffi_ver_compare(VS_FIXEDFILEINFO *pffi, WORD wMajor, WORD wMinor, WORD wBuild, WORD wRev);
+bool InitializeMutex(bool InitialOwner, const wchar_t *pMutexName, HANDLE *phMutex);
+bool CreateEventWithStringSecurityDescriptor(
+        const wchar_t *pStringSecurityDescriptor,
+        bool ManualReset,
+        bool InitialState,
+        const wchar_t *pName,
+        HANDLE *phEvent);
+int FileInfoVerCompare(VS_FIXEDFILEINFO *pffi, WORD wMajor, WORD wMinor, WORD wBuild, WORD wRev);
+bool GetVersionInfoFromHModule(HMODULE hModule, LPCWSTR pszSubBlock, LPVOID pData, PUINT pcbData);
+LPVOID GetVersionInfoFromHModuleAlloc(HMODULE hModule, LPCWSTR pszSubBlock, PUINT pcbData);
+bool FindIsDeviceServiceablePtr(HMODULE hModule, PVOID *ppfnIsDeviceServiceable);
+HANDLE GetRemoteHModuleFromTh32ModuleSnapshot(HANDLE hSnapshot, const wchar_t *pLibFileName);
+bool InjectLibraryAndCreateRemoteThread(
+        HANDLE hProcess,
+        HMODULE hModule,
+        LPTHREAD_START_ROUTINE pStartAddress,
+        const void *pParam,
+        size_t cbParam);
+bool InjectLibrary(HANDLE hProcess, HMODULE hModule, HMODULE *phRemoteModule);
+bool InjectLibraryByFilename(
+        HANDLE hProcess,
+        const wchar_t *pLibFilename,
+        size_t cchLibFilename,
+        HMODULE *phRemoteModule);
+bool IsWindowsVersion(WORD wMajorVersion, WORD wMinorVersion, WORD wServicePackMajor);
+PVOID RegGetValueAlloc(
+        HKEY hkey,
+        const wchar_t *pSubKey,
+        const wchar_t *pValue,
+        DWORD dwFlags,
+        LPDWORD pdwType,
+        LPDWORD pcbData);
+LPQUERY_SERVICE_CONFIGW QueryServiceConfigByNameAlloc(
+        SC_HANDLE hSCM,
+        const wchar_t *pServiceName,
+        LPDWORD pcbBufSize);
+bool QueryServiceStatusProcessInfoByName(
+        SC_HANDLE hSCM,
+        const wchar_t *pServiceName,
+        LPSERVICE_STATUS_PROCESS pServiceStatus);
+DWORD QueryServiceProcessId(SC_HANDLE hSCM, const wchar_t *pServiceName);
